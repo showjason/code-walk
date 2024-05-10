@@ -51,23 +51,7 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 		}
 	}
 
-	// The same check already ran in ShouldProvision, but perhaps
-	// it couldn't complete due to some unexpected error.
-	owned, err := p.checkNode(ctx, claim, options.StorageClass, "provision")
-	if err != nil {
-		return nil, controller.ProvisioningNoChange,
-			fmt.Errorf("node check failed: %v", err)
-	}
-	if !owned {
-		return nil, controller.ProvisioningNoChange, &controller.IgnoredError{
-			Reason: fmt.Sprintf("not responsible for provisioning of PVC %s/%s because it is not assigned to node %q", claim.Namespace, claim.Name, p.nodeDeployment.NodeName),
-		}
-	}
-
-	result, state, err := p.prepareProvision(ctx, claim, options.StorageClass, options.SelectedNode)
-	if result == nil {
-		return nil, state, err
-	}
+	....
 	req := result.req
 	volSizeBytes := req.CapacityRange.RequiredBytes
 	pvName := req.Name
@@ -92,16 +76,9 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 		// We do this regardless whether the driver has asked for strict topology because
 		// even drivers which did not ask for it explicitly might still only look at the first
 		// topology entry and thus succeed after rescheduling.
-		mayReschedule := p.supportsTopology() &&
-			options.SelectedNode != nil
-		state := checkError(err, mayReschedule)
-		klog.V(5).Infof("CreateVolume failed, supports topology = %v, node selected %v => may reschedule = %v => state = %v: %v",
-			p.supportsTopology(),
-			options.SelectedNode != nil,
-			mayReschedule,
-			state,
-			err)
-		return nil, state, err
+
+		....
+
 	}
 
 	if rep.Volume != nil {
@@ -130,23 +107,8 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 		return nil, controller.ProvisioningInBackground, capErr
 	}
 
-	if options.PVC.Spec.DataSource != nil ||
-		(utilfeature.DefaultFeatureGate.Enabled(features.CrossNamespaceVolumeDataSource) &&
-			options.PVC.Spec.DataSourceRef != nil && options.PVC.Spec.DataSourceRef.Namespace != nil &&
-			len(*options.PVC.Spec.DataSourceRef.Namespace) > 0) {
-		contentSource := rep.GetVolume().ContentSource
-		if contentSource == nil {
-			sourceErr := fmt.Errorf("volume content source missing")
-			delReq := &csi.DeleteVolumeRequest{
-				VolumeId: rep.GetVolume().GetVolumeId(),
-			}
-			err = cleanupVolume(ctx, p, delReq, provisionerCredentials)
-			if err != nil {
-				sourceErr = fmt.Errorf("%v. cleanup of volume %s failed, volume is orphaned: %v", sourceErr, pvName, err)
-			}
-			return nil, controller.ProvisioningInBackground, sourceErr
-		}
-	}
+	.....
+
 	pvReadOnly := false
 	volCaps := req.GetVolumeCapabilities()
 	// if the request only has one accessmode and if its ROX, set readonly to true
@@ -176,22 +138,8 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 	}
 
 	// Set annDeletionSecretRefName and namespace in PV object.
-	if result.provDeletionSecrets != nil {
-		klog.V(5).Infof("createVolumeOperation: set annotation [%s/%s] on pv [%s].", annDeletionProvisionerSecretRefNamespace, annDeletionProvisionerSecretRefName, pv.Name)
-		metav1.SetMetaDataAnnotation(&pv.ObjectMeta, annDeletionProvisionerSecretRefName, result.provDeletionSecrets.name)
-		metav1.SetMetaDataAnnotation(&pv.ObjectMeta, annDeletionProvisionerSecretRefNamespace, result.provDeletionSecrets.namespace)
-	} else {
-		metav1.SetMetaDataAnnotation(&pv.ObjectMeta, annDeletionProvisionerSecretRefName, "")
-		metav1.SetMetaDataAnnotation(&pv.ObjectMeta, annDeletionProvisionerSecretRefNamespace, "")
-	}
 
-	if options.StorageClass.ReclaimPolicy != nil {
-		pv.Spec.PersistentVolumeReclaimPolicy = *options.StorageClass.ReclaimPolicy
-	}
-
-	if p.supportsTopology() {
-		pv.Spec.NodeAffinity = GenerateVolumeNodeAffinity(rep.Volume.AccessibleTopology)
-	}
+        ....
 
 	// Set VolumeMode to PV if it is passed via PVC spec when Block feature is enabled
 	if options.PVC.Spec.VolumeMode != nil {
@@ -209,28 +157,14 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 
 	klog.V(2).Infof("successfully created PV %v for PVC %v and csi volume name %v", pv.Name, options.PVC.Name, pv.Spec.CSI.VolumeHandle)
 
-	if result.migratedVolume {
-		pv, err = p.translator.TranslateCSIPVToInTree(pv)
-		if err != nil {
-			klog.Warningf("failed to translate CSI PV to in-tree due to: %v. Deleting provisioned PV", err)
-			deleteErr := p.Delete(ctx, pv)
-			if deleteErr != nil {
-				klog.Warningf("failed to delete partly provisioned PV: %v", deleteErr)
-				// Retry the call again to clean up the orphan
-				return nil, controller.ProvisioningInBackground, err
-			}
-			return nil, controller.ProvisioningFinished, err
-		}
-	}
+	....
 
 	klog.V(5).Infof("successfully created PV %+v", pv.Spec.PersistentVolumeSource)
 	return pv, controller.ProvisioningFinished, nil
 }
 ```
 
-CreateVolume 方法接收到请求之后，开始创建 PV。Juicefs 的 CreateVolume 方法没有实现具体的创建过程。。。
-
-没有 attach/detach 和 staging 阶段，直接跳到 publishing 阶段。
+CreateVolume 方法接收到请求之后，开始创建 PV。Juicefs 的 CreateVolume 方法没有实现具体的创建过程，而是由一个 mount pod 来实现 volume 的格式化和挂载。所以也没有实现 csi 的 attach/detach 和 staging 功能，直接跳到 publishing 阶段。
 
 创建 PV 的流程如下：
 
