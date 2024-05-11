@@ -31,7 +31,7 @@ func (ctrl *PersistentVolumeController) setClaimProvisioner(ctx context.Context,
 }
 ```
 
-这时  Juicefs csi driver 的sidecar `external-provisioner` 会发现这个 PVC，并对比 annotation 的值与 csi driver 是否相同，相同，则创建一个 CreateVolumeRequest, 通过 RPC 请求调用 juicfs csi controller 的 CreateVolume，创建对应的 PV。
+这时  Juicefs csi driver 的 sidecar `external-provisioner` 的 infomer 机制会发现这个 PVC，并对比 annotation 的值与 csi driver 是否相同，如果相同，则创建一个 CreateVolumeRequest, 通过 RPC 请求调用 juicfs csi controller 的 CreateVolume，创建对应的 PV (这里省略了部分代码)。
 
 ```
 func (p *csiProvisioner) Provision(ctx context.Context, options controller.ProvisionOptions) (*v1.PersistentVolume, controller.ProvisioningState, error) {
@@ -164,7 +164,7 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 }
 ```
 
-CreateVolume 方法接收到请求之后，开始创建 PV。Juicefs 的 CreateVolume 方法没有实现具体的创建过程，而是由一个 mount pod 来实现 volume 的格式化和挂载。所以也没有实现 csi 的 attach/detach 和 staging 功能，直接跳到 publishing 阶段。
+CreateVolume 方法接收到请求之后，开始创建 PV。Juicefs 的 CreateVolume 方法没有实现具体的创建过程，也没有实现 csi 的 attach/detach 和 staging 功能，而是由 NodePublishVolume 创建了一个 mount pod 来实现 volume 的格式化和挂载。
 
 创建 PV 的流程如下：
 
@@ -176,7 +176,7 @@ node.go
             func JfsMount -> generate mount fs object(jfs)
                 juicefs.go
                     func MountFs -> 判断是 pod 挂载，还是进程挂载
-                      如果是 pod 挂在(mount_pod): pod_mount.go
+                      如果是 pod 挂载(mount_pod): pod_mount.go
 				    func JMount -> 生成 mount pod，挂载点 和 pv 的 reference
                                         pod_mount.go
         				    func setMountLabel
