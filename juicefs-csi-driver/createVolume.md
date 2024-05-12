@@ -4,6 +4,8 @@
 
 当创建了 PVC 之后，Kubernetes 的 PVcontroller 发现新的 PVC 被创建，并确认这个 PVC 属于 out-of-tree，便会给这个 PVC 加上 `annotation volume.kubernetes.io/storage-provisioner: csi.juicefs.com` 和 `volume.beta.kubernetes.io/storage-provisioner: csi.juicefs.com`，后者将被废弃。
 
+external-provisioner 通过如下代码设置 annotation
+
 ```
 func (ctrl *PersistentVolumeController) setClaimProvisioner(ctx context.Context, claim *v1.PersistentVolumeClaim, provisionerName string) (*v1.PersistentVolumeClaim, error) {
 	if val, ok := claim.Annotations[storagehelpers.AnnStorageProvisioner]; ok && val == provisionerName {
@@ -31,7 +33,7 @@ func (ctrl *PersistentVolumeController) setClaimProvisioner(ctx context.Context,
 }
 ```
 
-这时  Juicefs csi driver 的 sidecar `external-provisioner` 的 infomer 机制会发现这个 PVC，并对比 annotation 的值与 csi driver 是否相同，如果相同，则创建一个 CreateVolumeRequest, 通过 RPC 请求调用 juicfs csi controller 的 CreateVolume，创建对应的 PV (这里省略了部分代码)。
+这时  Juicefs csi driver 的 sidecar `external-provisioner` 的 infomer 机制会发现这个 PVC，并对比 PVC 的 annotation 的值与 csi driver 是否相同，这里的 `driverName` 是通过调用 GetPluginInfo 获取的 。如果相同，则创建一个 CreateVolumeRequest, 通过 RPC 请求调用 juicfs csi controller 的 CreateVolume，创建对应的 PV (这里省略了部分代码)。
 
 ```
 func (p *csiProvisioner) Provision(ctx context.Context, options controller.ProvisionOptions) (*v1.PersistentVolume, controller.ProvisioningState, error) {
