@@ -82,32 +82,8 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 		....
 
 	}
-
-	if rep.Volume != nil {
-		klog.V(3).Infof("create volume rep: %+v", *rep.Volume)
-	}
-	volumeAttributes := map[string]string{provisionerIDKey: p.identity}
-	for k, v := range rep.Volume.VolumeContext {
-		volumeAttributes[k] = v
-	}
-	respCap := rep.GetVolume().GetCapacityBytes()
-
+	....
 	// According to CSI spec CreateVolume should be able to return capacity = 0, which means it is unknown. for example NFS/FTP
-	if respCap == 0 {
-		respCap = volSizeBytes
-		klog.V(3).Infof("csiClient response volume with size 0, which is not supported by apiServer, will use claim size:%d", respCap)
-	} else if respCap < volSizeBytes {
-		capErr := fmt.Errorf("created volume capacity %v less than requested capacity %v", respCap, volSizeBytes)
-		delReq := &csi.DeleteVolumeRequest{
-			VolumeId: rep.GetVolume().GetVolumeId(),
-		}
-		err = cleanupVolume(ctx, p, delReq, provisionerCredentials)
-		if err != nil {
-			capErr = fmt.Errorf("%v. Cleanup of volume %s failed, volume is orphaned: %v", capErr, pvName, err)
-		}
-		// use InBackground to retry the call, hoping the volume is deleted correctly next time.
-		return nil, controller.ProvisioningInBackground, capErr
-	}
 
 	.....
 
@@ -115,48 +91,16 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 	volCaps := req.GetVolumeCapabilities()
 	// if the request only has one accessmode and if its ROX, set readonly to true
 	// TODO: check for the driver capability of MULTI_NODE_READER_ONLY capability from the CSI driver
-	if len(volCaps) == 1 && volCaps[0].GetAccessMode().GetMode() == csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY && p.controllerPublishReadOnly {
-		pvReadOnly = true
-	}
-
-	result.csiPVSource.VolumeHandle = p.volumeIdToHandle(rep.Volume.VolumeId)
-	result.csiPVSource.VolumeAttributes = volumeAttributes
-	result.csiPVSource.ReadOnly = pvReadOnly
-	pv := &v1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: pvName,
-		},
-		Spec: v1.PersistentVolumeSpec{
-			AccessModes:  options.PVC.Spec.AccessModes,
-			MountOptions: options.StorageClass.MountOptions,
-			Capacity: v1.ResourceList{
-				v1.ResourceName(v1.ResourceStorage): bytesToQuantity(respCap),
-			},
-			// TODO wait for CSI VolumeSource API
-			PersistentVolumeSource: v1.PersistentVolumeSource{
-				CSI: result.csiPVSource,
-			},
-		},
-	}
+	....
 
 	// Set annDeletionSecretRefName and namespace in PV object.
 
         ....
 
 	// Set VolumeMode to PV if it is passed via PVC spec when Block feature is enabled
-	if options.PVC.Spec.VolumeMode != nil {
-		pv.Spec.VolumeMode = options.PVC.Spec.VolumeMode
-	}
+	....
 	// Set FSType if PV is not Block Volume
-	if !util.CheckPersistentVolumeClaimModeBlock(options.PVC) {
-		pv.Spec.PersistentVolumeSource.CSI.FSType = result.fsType
-	}
-
-	vacName := claim.Spec.VolumeAttributesClassName
-	if utilfeature.DefaultFeatureGate.Enabled(features.VolumeAttributesClass) && vacName != nil && *vacName != "" {
-		pv.Spec.VolumeAttributesClassName = vacName
-	}
-
+	....
 	klog.V(2).Infof("successfully created PV %v for PVC %v and csi volume name %v", pv.Name, options.PVC.Name, pv.Spec.CSI.VolumeHandle)
 
 	....
@@ -189,4 +133,45 @@ node.go
 		 BindTarget: binding /jfs/pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac-tzdxni/pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac at /var/lib/kubelet/pods/4f2bd0db-159c-4370-86e8-58524750946c/volumes/kubernetes.io~csi/pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac/mount
 	    juicefs.SetQuota -> 代码返回 error，貌似不妥，是否可以优化
                  SetQuota cmd: /usr/local/bin/juicefs quota set ${metaurl} --path pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac --capacity 10
+```
+
+mount pod 代码流程：
+
+```
+func (p *PodMount) JMount(ctx context.Context, appInfo *jfsConfig.AppInfo, jfsSetting *jfsConfig.JfsSetting) error {
+	podName, err := p.genMountPodName(ctx, jfsSetting)
+	if err != nil {
+		return err
+	}
+
+	// set mount pod name in app pod
+	if appInfo != nil && appInfo.Name != "" && appInfo.Namespace != "" {
+		err = p.setMountLabel(ctx, jfsSetting.UniqueId, podName, appInfo.Name, appInfo.Namespace)
+		if err != nil {
+			return err
+		}
+	}
+	// 创建 mount pod, 如果在同一个节点上，使用的是相同的 PV，则增加 reference
+	err = p.createOrAddRef(ctx, podName, jfsSetting, appInfo)
+	if err != nil {
+		return err
+	}
+	// 等待挂载操作完成
+	err = p.waitUtilMountReady(ctx, jfsSetting, podName)
+	if err != nil {
+		return err
+	}
+	if jfsSetting.CleanCache && jfsSetting.UUID == "" {
+		// need set uuid as label in mount pod for clean cache
+		uuid, err := p.GetJfsVolUUID(ctx, jfsSetting.Source)
+		if err != nil {
+			return err
+		}
+		err = p.setUUIDAnnotation(ctx, podName, uuid)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 ```
