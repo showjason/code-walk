@@ -110,7 +110,7 @@ func (p *csiProvisioner) Provision(ctx context.Context, options controller.Provi
 }
 ```
 
-CreateVolume 方法接收到请求之后，开始创建 PV。Juicefs 的 CreateVolume 方法没有实现具体的创建过程，也没有实现 csi 的 attach/detach 和 staging 功能，而是由 NodePublishVolume 创建了一个 mount pod 来实现 volume 的格式化和挂载。
+CreateVolume 方法接收到请求之后，开始创建 PV。Juicefs 的 CreateVolume 方法没有实现具体的创建过程，也没有实现 csi 的 attach/detach 和 staging 功能，而是由 NodePublishVolume 创建了一个 mount pod 来实现 volume 的创建、格式化和挂载。
 
 创建 PV 的流程如下：
 
