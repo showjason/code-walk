@@ -131,7 +131,7 @@ node.go
   	    func jfs.CreateVol -> 创建 Volume
   	    jfs.BindTarget -> 绑定 path
 		 BindTarget: binding /jfs/pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac-tzdxni/pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac at /var/lib/kubelet/pods/4f2bd0db-159c-4370-86e8-58524750946c/volumes/kubernetes.io~csi/pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac/mount
-	    juicefs.SetQuota -> 代码返回 error，貌似不妥，是否可以优化
+	    juicefs.SetQuota -> set quota 成功后返回的消息是以 error 命名？
                  SetQuota cmd: /usr/local/bin/juicefs quota set ${metaurl} --path pvc-2c02a96f-6683-41b9-9d00-242954bfd6ac --capacity 10
 ```
 
