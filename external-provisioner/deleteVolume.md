@@ -1,6 +1,6 @@
 
 
-external provisioner 的代码版本是 V1.6.0
+# external provisioner V1.6.0
 
 在Provisioner 的入口函数中，实例化了 ProvisionerController，然后调用 Run 函数启动所有的 controller
 
