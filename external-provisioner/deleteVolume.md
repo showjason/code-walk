@@ -1,5 +1,8 @@
 
 
+external provisioner 的代码版本是 V1.6.0
+
+在Provisioner 的入口函数中，实例化了 ProvisionerController，然后调用 Run 函数启动所有的 controller
 
 external-provisioner/cmd/csi-provisioner/csi-provisioner.go
 
@@ -17,12 +20,14 @@ func main() {
 	provisionerOptions...,
     )  
     ....
+    // 启动所有的 controller
     provisionController.Run(ctx)
     ....
 }
 
 ```
 
+Run 方法启动了 runVolumeWorker, 这个方法循环调用方法 processNextVolumeWorkItem，直到这个方法返回 false。
 
 ```
 
@@ -43,7 +48,7 @@ func (ctrl *ProvisionController) runVolumeWorker() {
 	}
 }
 
-// processNextVolumeWorkItem processes items from volumeQueue
+// processNextVolumeWorkItem 处理来自 volumeQueue 的 items，只有 volumeQueue 被 shutdown 了，才返回 false
 func (ctrl *ProvisionController) processNextVolumeWorkItem() bool {
 	obj, shutdown := ctrl.volumeQueue.Get()
 
@@ -52,14 +57,7 @@ func (ctrl *ProvisionController) processNextVolumeWorkItem() bool {
 	}
 
 	err := func(obj interface{}) error {
-		defer ctrl.volumeQueue.Done(obj)
-		var key string
-		var ok bool
-		if key, ok = obj.(string); !ok {
-			ctrl.volumeQueue.Forget(obj)
-			return fmt.Errorf("expected string in workqueue but got %#v", obj)
-		}
-
+	    	....
 		if err := ctrl.syncVolumeHandler(key); err != nil {
 			if ctrl.failedDeleteThreshold == 0 {
 				glog.Warningf("Retrying syncing volume %q, failure %v", key, ctrl.volumeQueue.NumRequeues(obj))
@@ -74,9 +72,6 @@ func (ctrl *ProvisionController) processNextVolumeWorkItem() bool {
 			}
 			return fmt.Errorf("error syncing volume %q: %s", key, err.Error())
 		}
-
-		ctrl.volumeQueue.Forget(obj)
-		return nil
 	}(obj)
 
 	if err != nil {
@@ -87,19 +82,99 @@ func (ctrl *ProvisionController) processNextVolumeWorkItem() bool {
 	return true
 }
 
-// syncVolumeHandler gets the volume from informer's cache then calls syncVolume
+// syncVolumeHandler 从 informer 的缓冲中获取 volume，然后调用 syncVolume 方法
 func (ctrl *ProvisionController) syncVolumeHandler(key string) error {
 	volumeObj, exists, err := ctrl.volumes.GetByKey(key)
 	....
 	return ctrl.syncVolume(volumeObj)
 }
-// 检查是否有需要删除的 Volume
-func (ctrl *ProvisionController) syncVolume(obj interface{}) error {}
+// 检查传进来的 Volume 是否是 PersistentVolume，然后判断是否需要删除。
+func (ctrl *ProvisionController) syncVolume(obj interface{}) error {
+	volume, ok := obj.(*v1.PersistentVolume)
+	if !ok {
+		return fmt.Errorf("expected volume but got %+v", obj)
+	}
+	// 这里判断是否需要删除这个 volume
+	if ctrl.shouldDelete(volume) {
+		startTime := time.Now()
+		err := ctrl.deleteVolumeOperation(volume)
+		ctrl.updateDeleteStats(volume, err, startTime)
+		return err
+	}
+	return nil
+}
+
+
 
 ```
 
+shouldDelete 方法这里通过多个判断条件来决定是否可以删除
 
 ```
+// shouldDelete returns whether a volume should have its backing volume
+// deleted, i.e. whether a Delete is "desired"
+func (ctrl *ProvisionController) shouldDelete(volume *v1.PersistentVolume) bool {
+	// 断言是否是 DeletionGuard 类型，是则调用 ShouldDelete 继续判断。
+	if deletionGuard, ok := ctrl.provisioner.(DeletionGuard); ok {
+		if !deletionGuard.ShouldDelete(volume) {
+			return false
+		}
+	}
+
+
+	// In 1.9+ PV protection means the object will exist briefly with a
+	// deletion timestamp even after our successful Delete. Ignore it.
+	// k8s 1.9 版本以上
+	if ctrl.kubeVersion.AtLeast(utilversion.MustParseSemantic("v1.9.0")) {
+		// addFinalizer 为 true，且这个 volume 的 finalizers 中有 "external-provisioner.volume.kubernetes.io/finalizer"
+		// 且被设置了删除时间戳，则不需要删除
+		if ctrl.addFinalizer && !ctrl.checkFinalizer(volume, finalizerPV) && volume.ObjectMeta.DeletionTimestamp != nil {
+			return false
+		// 被设置了删除时间戳，则不需要删除
+		} else if volume.ObjectMeta.DeletionTimestamp != nil {
+			return false
+		}
+	}
+
+	// In 1.5+ we delete only if the volume is in state Released. In 1.4 we must
+	// delete if the volume is in state Failed too.
+	// k8s v1.5.0 以上
+	if ctrl.kubeVersion.AtLeast(utilversion.MustParseSemantic("v1.5.0")) {
+		// volume 的状态不是 Released，不需要删除
+		if volume.Status.Phase != v1.VolumeReleased {
+			return false
+		}
+	// v1.5.0 以下
+	} else {
+		// volume 状态不是 Released 且不是 Failed
+		if volume.Status.Phase != v1.VolumeReleased && volume.Status.Phase != v1.VolumeFailed {
+			return false
+		}
+	}
+	// PV 回收策略不是 Delete，不需要删除
+	if volume.Spec.PersistentVolumeReclaimPolicy != v1.PersistentVolumeReclaimDelete {
+		return false
+	}
+	// annotation 中有 "pv.kubernetes.io/provisioned-by"，不需要删除
+	if !metav1.HasAnnotation(volume.ObjectMeta, annDynamicallyProvisioned) {
+		return false
+	}
+
+	ann := volume.Annotations[annDynamicallyProvisioned]
+	migratedTo := volume.Annotations[annMigratedTo]
+	"pv.kubernetes.io/provisioned-by" 和 "pv.kubernetes.io/migrated-to" 的值都不是 csi driverName，不需要删除
+	if ann != ctrl.provisionerName && migratedTo != ctrl.provisionerName {
+		return false
+	}
+
+	return true
+}
+```
+
+满足删除条件之后，调用 deleteVolumeOperation，这里就会调用 csi 实现的 RPC DeleteVolume 来删除 volume
+
+```
+
 func (ctrl *ProvisionController) deleteVolumeOperation(volume *v1.PersistentVolume) error {
 	operation := fmt.Sprintf("delete %q", volume.Name)
 	glog.Info(logOperation(operation, "started"))
@@ -171,6 +246,8 @@ func (ctrl *ProvisionController) deleteVolumeOperation(volume *v1.PersistentVolu
 }
 
 ```
+
+
 
 构造 delete volume request, 调用 CSI RPC DeleteVolume。
 
