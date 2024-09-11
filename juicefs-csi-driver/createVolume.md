@@ -2,9 +2,9 @@
 
 这部分代码走读是针对 pod mount
 
-当创建了 PVC 之后，Kubernetes 的 PVcontroller 发现新的 PVC 被创建，并确认这个 PVC 属于 out-of-tree，便会给这个 PVC 加上 `annotation volume.kubernetes.io/storage-provisioner: csi.juicefs.com` 和 `volume.beta.kubernetes.io/storage-provisioner: csi.juicefs.com`，后者将被废弃。
+当创建了 PVC 之后，Kubernetes 的 PVcontroller 发现新的 PVC 被创建，可以通过 StorageClass 确认这个 PVC 是否属于 out-of-tree，便会给这个 PVC 加上 `annotation volume.kubernetes.io/storage-provisioner: csi.juicefs.com` 和 `volume.beta.kubernetes.io/storage-provisioner: csi.juicefs.com`，后者将被废弃。
 
-external-provisioner 通过如下代码设置 annotation
+PersistentVolumeController 通过如下代码设置 annotation
 
 ```
 func (ctrl *PersistentVolumeController) setClaimProvisioner(ctx context.Context, claim *v1.PersistentVolumeClaim, provisionerName string) (*v1.PersistentVolumeClaim, error) {
